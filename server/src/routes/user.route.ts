@@ -2,10 +2,10 @@ import express, { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import User from "../models/user.model";
-import { authenticate , AuthenticatedRequest} from "../middleware/auth";
+import { authenticate, AuthenticatedRequest } from "../middleware/auth";
+import { registerSchema, loginSchema } from "../schema/auth";
 
 const router = express.Router();
-
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret";
 
 interface User {
@@ -14,18 +14,30 @@ interface User {
   firstName: string;
   lastName: string;
 }
-// Register User
-router.post("/register", async (req: Request, res: Response) : Promise<any> => {
-  const { firstName, lastName, email, password } = req.body;
+
+router.post("/register", async (req: Request, res: Response): Promise<any> => {
+  const validationResult = registerSchema.safeParse(req.body);
+
+  if (!validationResult.success) {
+    return res.status(400).json({
+      message: "Validation error",
+      errors: validationResult.error.errors,
+    });
+  }
+
+  const { firstName, lastName, email, password } = validationResult.data;
 
   try {
+    // Check if the user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: "User already exists" });
     }
 
+    // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Create a new user and save to database
     const newUser = new User({
       firstName,
       lastName,
@@ -33,29 +45,43 @@ router.post("/register", async (req: Request, res: Response) : Promise<any> => {
       password: hashedPassword,
     });
 
-    await newUser.save();
+    const savedUser = await newUser.save();
+
+    // Create JWT token
+    if (!process.env.JWT_SECRET) {
+      console.error("JWT_SECRET is undefined");
+      throw new Error("JWT_SECRET is not configured");
+    }
 
     const token = jwt.sign(
-      { id: newUser._id, email: newUser.email, firstName, lastName },
-      JWT_SECRET,
+      {
+        id: savedUser._id,
+        email: savedUser.email,
+        firstName: savedUser.firstName,
+        lastName: savedUser.lastName,
+      },
+      process.env.JWT_SECRET!,
       { expiresIn: "1h" }
     );
 
-    const userResponse: User = {
-      id: newUser._id.toString(),
-      email: newUser.email,
-      firstName: newUser.firstName,
-      lastName: newUser.lastName,
-    };
-
-    res.status(201).json({ message: "User registered successfully", token, user: userResponse });
+    res.status(201).json({
+      message: "User registered successfully",
+      token,
+      user: {
+        id: savedUser._id,
+        firstName: savedUser.firstName,
+        lastName: savedUser.lastName,
+        email: savedUser.email,
+      },
+    });
   } catch (error) {
+    console.error("Error during registration:", error);
     res.status(500).json({ message: "Something went wrong", error });
   }
 });
 
 // Login User
-router.post("/login", async (req: Request, res: Response) : Promise<any> => {
+router.post("/login", async (req: Request, res: Response): Promise<any> => {
   const { email, password } = req.body;
 
   try {
@@ -70,62 +96,77 @@ router.post("/login", async (req: Request, res: Response) : Promise<any> => {
     }
 
     const token = jwt.sign(
-      { id: user._id, email: user.email, firstName: user.firstName, lastName: user.lastName },
+      {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      },
       JWT_SECRET,
       { expiresIn: "1h" }
     );
 
-    const userResponse: User = {
+    const userResponse = {
       id: user._id.toString(),
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
     };
 
-    res.status(200).json({ message: "Login successful", token, user: userResponse });
+    res
+      .status(200)
+      .json({ message: "Login successful", token, user: userResponse });
   } catch (error) {
     res.status(500).json({ message: "Something went wrong", error });
   }
 });
 
 // Get User Details (Protected Route)
-router.get("/me", authenticate, async (req: AuthenticatedRequest, res: Response) : Promise<any> => {
-  try {
-    const userId = req.user?.id;
-    const user = await User.findById(userId).select("-password");
+router.get(
+  "/me",
+  authenticate,
+  async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.id;
+      console.log("userId", userId);
+      const user = await User.findById(userId).select("-password");
+      console.log("user", user);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      const userResponse = {
+        id: user._id.toString(),
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+      };
+
+      res.status(200).json(userResponse);
+    } catch (error) {
+      res.status(500).json({ message: "Something went wrong", error });
     }
-
-    const userResponse: User = {
-      id: user._id.toString(),
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-    };
-
-    res.status(200).json(userResponse);
-  } catch (error) {
-    res.status(500).json({ message: "Something went wrong", error });
   }
-});
+);
 
 // Delete User (Protected Route)
-router.delete("/delete", authenticate, async (req: AuthenticatedRequest, res: Response) : Promise<any> => {
-  try {
-    const userId = req.user?.id;
-    const user = await User.findByIdAndDelete(userId);
+router.delete(
+  "/delete",
+  authenticate,
+  async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+    try {
+      const userId = req.user?.id;
+      const user = await User.findByIdAndDelete(userId);
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      res.status(200).json({ message: "User deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Something went wrong", error });
     }
-
-    res.status(200).json({ message: "User deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ message: "Something went wrong", error });
   }
-});
-
+);
 
 export const userRouter: Router = router;

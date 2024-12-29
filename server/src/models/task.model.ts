@@ -7,6 +7,11 @@ const TaskSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     startTime: {
       type: Date,
       required: true,
